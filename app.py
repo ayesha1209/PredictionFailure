@@ -333,7 +333,7 @@ def status():
 if __name__ == '__main__':
     print("🚀 Starting Enhanced TTTF Prediction Web API")
     print("=" * 50)
-    port = int(os.environ.get('PORT', 5000))  # use 5000 locally, override with env PORT if exists
+
 
     # Load model on startup
     if load_model():
@@ -349,3 +349,6 @@ if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
 
 
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
