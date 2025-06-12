@@ -330,10 +330,16 @@ def status():
     })
 
 
+# Add a basic health check endpoint for Render
+@app.route('/health')
+def health_check():
+    """Health check endpoint"""
+    return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat()})
+
+
 if __name__ == '__main__':
     print("🚀 Starting Enhanced TTTF Prediction Web API")
     print("=" * 50)
-
 
     # Load model on startup
     if load_model():
@@ -343,12 +349,11 @@ if __name__ == '__main__':
         print(f"📊 Features: {feature_count}, Targets: {target_count}")
     else:
         print("❌ Failed to load model!")
-        print("   Please ensure 'tttf_gb_model_enhanced.pkl' exists.")
+        print("   Please ensure 'tttf_xgb_model_enhanced.pkl' exists.")
 
-    print("🌐 Starting Flask server...")
-    app.run(debug=True, host='0.0.0.0', port=5000)
-
-
-if __name__ == '__main__':
+    # Get port from environment variable (Render sets this to 10000)
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    print(f"🌐 Starting Flask server on port {port}...")
+
+    # Use production-ready settings for deployment
+    app.run(host='0.0.0.0', port=port, debug=False)
