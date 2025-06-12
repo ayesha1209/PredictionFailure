@@ -1,7 +1,5 @@
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
 import pandas as pd
 import numpy as np
 import joblib
@@ -35,13 +33,6 @@ def setup_logging(app):
 
 app = Flask(__name__)
 CORS(app)
-
-# Rate limiting
-limiter = Limiter(
-    key_func=get_remote_address,
-    app=app,
-    default_limits=["200 per day", "50 per hour"]
-)
 
 # Global variable to store model
 model_package = None
@@ -328,7 +319,6 @@ def index():
 
 
 @app.route('/api/model-info')
-@limiter.limit("10 per minute")
 def model_info():
     """Get model information"""
     if not model_package:
@@ -348,7 +338,6 @@ def model_info():
 
 
 @app.route('/api/example-data')
-@limiter.limit("10 per minute")
 def example_data():
     """Get example data for testing"""
     if not model_package:
@@ -359,7 +348,6 @@ def example_data():
 
 
 @app.route('/api/predict', methods=['POST'])
-@limiter.limit("30 per minute")
 def predict():
     """Make prediction endpoint"""
     if not model_package:
@@ -399,7 +387,6 @@ def predict():
 
 
 @app.route('/api/performance')
-@limiter.limit("5 per minute")
 def performance():
     """Get model performance metrics"""
     if not model_package:
@@ -446,11 +433,6 @@ def health_check():
     })
 
 
-@app.errorhandler(429)
-def ratelimit_handler(e):
-    return jsonify({'error': 'Rate limit exceeded', 'message': str(e.description)}), 429
-
-
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({'error': 'Endpoint not found'}), 404
@@ -478,7 +460,8 @@ if __name__ == '__main__':
     else:
         print("❌ Failed to load model!")
         print("   Please ensure model file exists in the models directory.")
-        sys.exit(1)  # Exit if model loading fails
+        # Don't exit - let it run for debugging
+        # sys.exit(1)
 
     # Get port from environment variable
     port = int(os.environ.get('PORT', 5000))
