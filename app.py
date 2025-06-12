@@ -5,6 +5,7 @@ import numpy as np
 import joblib
 from datetime import datetime
 import traceback
+import os
 
 app = Flask(__name__)
 CORS(app)
@@ -332,6 +333,7 @@ def status():
 if __name__ == '__main__':
     print("🚀 Starting Enhanced TTTF Prediction Web API")
     print("=" * 50)
+    port = int(os.environ.get('PORT', 5000))  # use 5000 locally, override with env PORT if exists
 
     # Load model on startup
     if load_model():
@@ -345,3 +347,5 @@ if __name__ == '__main__':
 
     print("🌐 Starting Flask server...")
     app.run(debug=True, host='0.0.0.0', port=5000)
+
+
