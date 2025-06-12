@@ -1,0 +1,12 @@
+Flask==3.1.1
+pandas==2.3.0
+scikit-learn==1.7.0
+numpy==2.2.6
+xgboost==3.0.2
+gunicorn==23.0.0
+joblib==1.5.1
+matplotlib==3.10.3
+seaborn==0.13.2
+flask-cors==6.0.0
+torch==2.7.1
+lightgbm==4.6.0
