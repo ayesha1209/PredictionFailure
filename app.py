@@ -1,14 +1,47 @@
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 import pandas as pd
 import numpy as np
 import joblib
 from datetime import datetime
 import traceback
 import os
+import logging
+from logging.handlers import RotatingFileHandler
+import sys
+
+
+# Configure logging
+def setup_logging(app):
+    if not app.debug:
+        # Create logs directory if it doesn't exist
+        if not os.path.exists('logs'):
+            os.mkdir('logs')
+
+        # Set up file handler with rotation
+        file_handler = RotatingFileHandler('logs/tttf_api.log',
+                                           maxBytes=10240, backupCount=10)
+        file_handler.setFormatter(logging.Formatter(
+            '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
+        ))
+        file_handler.setLevel(logging.INFO)
+        app.logger.addHandler(file_handler)
+
+        app.logger.setLevel(logging.INFO)
+        app.logger.info('TTTF API startup')
+
 
 app = Flask(__name__)
 CORS(app)
+
+# Rate limiting
+limiter = Limiter(
+    app,
+    key_func=get_remote_address,
+    default_limits=["200 per day", "50 per hour"]
+)
 
 # Global variable to store model
 model_package = None
@@ -17,17 +50,61 @@ model_package = None
 def load_model():
     """Load the enhanced model package"""
     global model_package
-    try:
-        model_package = joblib.load('models/tttf_xgb_model_enhanced.pkl')
-        return True
-    except FileNotFoundError:
+    model_paths = [
+        'models/tttf_xgb_model_enhanced.pkl',
+        'models/tttf_xgb_model_enhanced_backup.pkl'
+    ]
+
+    for path in model_paths:
         try:
-            model_package = joblib.load('models/tttf_xgb_model_enhanced_backup.pkl')
+            model_package = joblib.load(path)
+            app.logger.info(f'Model loaded successfully from {path}')
             return True
         except FileNotFoundError:
-            return False
-    except Exception:
-        return False
+            app.logger.warning(f'Model file not found: {path}')
+            continue
+        except Exception as e:
+            app.logger.error(f'Error loading model from {path}: {str(e)}')
+            continue
+
+    app.logger.error('Failed to load model from any path')
+    return False
+
+
+def validate_input_data(input_data):
+    """Validate input data structure and types"""
+    if not model_package:
+        return False, "Model not loaded"
+
+    required_features = model_package['feature_names']
+
+    # Check for missing features
+    missing_features = [f for f in required_features if f not in input_data]
+    if missing_features:
+        return False, f"Missing required features: {missing_features}"
+
+    # Validate data types
+    label_encoders = model_package['label_encoders']
+
+    for feature, value in input_data.items():
+        if feature not in required_features:
+            continue
+
+        # Check categorical features
+        if feature in label_encoders:
+            if value not in label_encoders[feature].classes_ and str(value) not in label_encoders[feature].classes_:
+                valid_options = list(label_encoders[feature].classes_)
+                return False, f"Invalid value '{value}' for {feature}. Valid options: {valid_options}"
+
+        # Check numerical features
+        else:
+            if value is not None and value != '':
+                try:
+                    float(value)
+                except (ValueError, TypeError):
+                    return False, f"Invalid numerical value '{value}' for {feature}"
+
+    return True, "Valid"
 
 
 def get_feature_info():
@@ -50,15 +127,15 @@ def get_feature_info():
             # Add guidance for numerical features
             guidance = ""
             if feature == 'volt':
-                guidance = "Voltage reading"
+                guidance = "Voltage reading (V)"
             elif feature == 'rotate':
-                guidance = "Rotation speed"
+                guidance = "Rotation speed (RPM)"
             elif feature == 'pressure':
-                guidance = "Pressure reading"
+                guidance = "Pressure reading (PSI)"
             elif feature == 'vibration':
                 guidance = "Vibration level"
             elif feature == 'age':
-                guidance = "Machine age in years"
+                guidance = "Machine age in days"
             elif feature == 'error_count':
                 guidance = "Recent error count"
             elif 'days_since' in feature:
@@ -230,11 +307,18 @@ def make_prediction(input_data):
         }
 
     except Exception as e:
-        return {
-            'success': False,
-            'error': str(e),
-            'traceback': traceback.format_exc()
-        }
+        app.logger.error(f'Prediction error: {str(e)}')
+        if app.debug:
+            return {
+                'success': False,
+                'error': str(e),
+                'traceback': traceback.format_exc()
+            }
+        else:
+            return {
+                'success': False,
+                'error': 'Prediction failed. Please check your input data.'
+            }
 
 
 @app.route('/')
@@ -244,6 +328,7 @@ def index():
 
 
 @app.route('/api/model-info')
+@limiter.limit("10 per minute")
 def model_info():
     """Get model information"""
     if not model_package:
@@ -263,6 +348,7 @@ def model_info():
 
 
 @app.route('/api/example-data')
+@limiter.limit("10 per minute")
 def example_data():
     """Get example data for testing"""
     if not model_package:
@@ -273,6 +359,7 @@ def example_data():
 
 
 @app.route('/api/predict', methods=['POST'])
+@limiter.limit("30 per minute")
 def predict():
     """Make prediction endpoint"""
     if not model_package:
@@ -283,18 +370,36 @@ def predict():
         if not input_data:
             return jsonify({'success': False, 'error': 'No input data provided'})
 
+        # Validate input data
+        is_valid, validation_message = validate_input_data(input_data)
+        if not is_valid:
+            return jsonify({'success': False, 'error': validation_message})
+
         result = make_prediction(input_data)
+
+        # Log successful predictions (without sensitive data)
+        if result['success']:
+            app.logger.info('Successful prediction made')
+
         return jsonify(result)
 
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'traceback': traceback.format_exc()
-        })
+        app.logger.error(f'Prediction endpoint error: {str(e)}')
+        if app.debug:
+            return jsonify({
+                'success': False,
+                'error': str(e),
+                'traceback': traceback.format_exc()
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Internal server error'
+            })
 
 
 @app.route('/api/performance')
+@limiter.limit("5 per minute")
 def performance():
     """Get model performance metrics"""
     if not model_package:
@@ -326,20 +431,43 @@ def status():
     return jsonify({
         'status': 'running',
         'model_loaded': model_loaded,
-        'version': '2.0_enhanced' if model_loaded else None
+        'version': '2.0_enhanced' if model_loaded else None,
+        'timestamp': datetime.now().isoformat()
     })
 
 
-# Add a basic health check endpoint for Render
 @app.route('/health')
 def health_check():
     """Health check endpoint"""
-    return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat()})
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat(),
+        'model_loaded': model_package is not None
+    })
+
+
+@app.errorhandler(429)
+def ratelimit_handler(e):
+    return jsonify({'error': 'Rate limit exceeded', 'message': str(e.description)}), 429
+
+
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({'error': 'Endpoint not found'}), 404
+
+
+@app.errorhandler(500)
+def internal_error(error):
+    app.logger.error(f'Server Error: {error}')
+    return jsonify({'error': 'Internal server error'}), 500
 
 
 if __name__ == '__main__':
     print("🚀 Starting Enhanced TTTF Prediction Web API")
     print("=" * 50)
+
+    # Set up logging
+    setup_logging(app)
 
     # Load model on startup
     if load_model():
@@ -349,11 +477,15 @@ if __name__ == '__main__':
         print(f"📊 Features: {feature_count}, Targets: {target_count}")
     else:
         print("❌ Failed to load model!")
-        print("   Please ensure 'tttf_xgb_model_enhanced.pkl' exists.")
+        print("   Please ensure model file exists in the models directory.")
+        sys.exit(1)  # Exit if model loading fails
 
-    # Get port from environment variable (Render sets this to 10000)
+    # Get port from environment variable
     port = int(os.environ.get('PORT', 5000))
-    print(f"🌐 Starting Flask server on port {port}...")
+    debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
 
-    # Use production-ready settings for deployment
-    app.run(host='0.0.0.0', port=port, debug=False)
+    print(f"🌐 Starting Flask server on port {port}...")
+    print(f"🔧 Debug mode: {debug_mode}")
+
+    # Use production-ready settings
+    app.run(host='0.0.0.0', port=port, debug=debug_mode)
