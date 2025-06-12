@@ -6,30 +6,7 @@ import joblib
 from datetime import datetime
 import traceback
 import os
-import logging
-from logging.handlers import RotatingFileHandler
 import sys
-
-
-# Configure logging
-def setup_logging(app):
-    if not app.debug:
-        # Create logs directory if it doesn't exist
-        if not os.path.exists('logs'):
-            os.mkdir('logs')
-
-        # Set up file handler with rotation
-        file_handler = RotatingFileHandler('logs/tttf_api.log',
-                                           maxBytes=10240, backupCount=10)
-        file_handler.setFormatter(logging.Formatter(
-            '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
-        ))
-        file_handler.setLevel(logging.INFO)
-        app.logger.addHandler(file_handler)
-
-        app.logger.setLevel(logging.INFO)
-        app.logger.info('TTTF API startup')
-
 
 app = Flask(__name__)
 CORS(app)
@@ -39,153 +16,195 @@ model_package = None
 
 
 def load_model():
-    """Load the enhanced model package"""
     global model_package
-    model_paths = [
-        'models/tttf_xgb_model_enhanced.pkl',
-        'models/tttf_xgb_model_enhanced_backup.pkl'
-    ]
+    try:
+        # Get the absolute path of the current script
+        base_dir = os.path.dirname(os.path.abspath(__file__))
 
-    for path in model_paths:
+        # Print debugging information
+        print(f"🔍 Script directory: {base_dir}")
+        print(f"🔍 Current working directory: {os.getcwd()}")
+        print(f"🔍 Python path: {sys.path}")
+
+        # List all files in the directory
         try:
-            model_package = joblib.load(path)
-            app.logger.info(f'Model loaded successfully from {path}')
-            return True
-        except FileNotFoundError:
-            app.logger.warning(f'Model file not found: {path}')
-            continue
+            files = os.listdir(base_dir)
+            print(f"🔍 Files in script directory: {files}")
+            pkl_files = [f for f in files if f.endswith('.pkl')]
+            print(f"🔍 PKL files found: {pkl_files}")
         except Exception as e:
-            app.logger.error(f'Error loading model from {path}: {str(e)}')
-            continue
+            print(f"❌ Error listing files: {e}")
 
-    app.logger.error('Failed to load model from any path')
-    return False
+        # Try multiple possible model file names and locations
+        possible_paths = [
+            os.path.join(base_dir, 'tttf_xgb_model_enhanced.pkl'),
+            os.path.join(base_dir, 'tttf_xgb_model_enhanced_backup.pkl'),
+            os.path.join(os.getcwd(), 'tttf_xgb_model_enhanced.pkl'),
+            os.path.join(os.getcwd(), 'tttf_xgb_model_enhanced_backup.pkl'),
+            'tttf_xgb_model_enhanced.pkl',  # Relative path
+            'tttf_xgb_model_enhanced_backup.pkl'  # Relative path
+        ]
+
+        for i, model_path in enumerate(possible_paths):
+            try:
+                print(f"📦 Attempt {i + 1}: Trying model path: {model_path}")
+                print(f"📦 Path exists: {os.path.exists(model_path)}")
+
+                if os.path.exists(model_path):
+                    print(f"📦 File size: {os.path.getsize(model_path)} bytes")
+                    model_package = joblib.load(model_path)
+                    print("✅ Model loaded successfully!")
+
+                    # Validate model package
+                    if validate_model_package():
+                        return True
+                    else:
+                        print("❌ Model validation failed, trying next path...")
+                        model_package = None
+                        continue
+                else:
+                    print(f"❌ File does not exist: {model_path}")
+
+            except FileNotFoundError:
+                print(f"❌ File not found: {model_path}")
+                continue
+            except Exception as e:
+                print(f"❌ Error loading model from {model_path}: {e}")
+                continue
+
+        print("❌ All model loading attempts failed")
+        return False
+
+    except Exception as e:
+        print(f"🔥 Unexpected error in load_model: {e}")
+        print(f"🔥 Traceback: {traceback.format_exc()}")
+        return False
 
 
-def validate_input_data(input_data):
-    """Validate input data structure and types"""
+def validate_model_package():
+    """Validate that the loaded model package has required components"""
     if not model_package:
-        return False, "Model not loaded"
+        print("❌ Model package is None")
+        return False
 
-    required_features = model_package['feature_names']
+    required_keys = ['model', 'feature_names', 'target_names']
+    missing_keys = [key for key in required_keys if key not in model_package]
 
-    # Check for missing features
-    missing_features = [f for f in required_features if f not in input_data]
-    if missing_features:
-        return False, f"Missing required features: {missing_features}"
+    if missing_keys:
+        print(f"❌ Model package missing required keys: {missing_keys}")
+        print(f"🔍 Available keys: {list(model_package.keys())}")
+        return False
 
-    # Validate data types
-    label_encoders = model_package['label_encoders']
-
-    for feature, value in input_data.items():
-        if feature not in required_features:
-            continue
-
-        # Check categorical features
-        if feature in label_encoders:
-            if value not in label_encoders[feature].classes_ and str(value) not in label_encoders[feature].classes_:
-                valid_options = list(label_encoders[feature].classes_)
-                return False, f"Invalid value '{value}' for {feature}. Valid options: {valid_options}"
-
-        # Check numerical features
-        else:
-            if value is not None and value != '':
-                try:
-                    float(value)
-                except (ValueError, TypeError):
-                    return False, f"Invalid numerical value '{value}' for {feature}"
-
-    return True, "Valid"
+    print(f"✅ Model package validated with keys: {list(model_package.keys())}")
+    return True
 
 
 def get_feature_info():
     """Get feature information for the frontend"""
     if not model_package:
+        print("❌ Model package not available for feature info")
         return None
 
-    feature_names = model_package['feature_names']
-    label_encoders = model_package['label_encoders']
+    try:
+        feature_names = model_package.get('feature_names', [])
+        label_encoders = model_package.get('label_encoders', {})
 
-    features = []
-    for feature in feature_names:
-        if feature in label_encoders:
-            features.append({
-                'name': feature,
-                'type': 'categorical',
-                'options': list(label_encoders[feature].classes_)
-            })
-        else:
-            # Add guidance for numerical features
-            guidance = ""
-            if feature == 'volt':
-                guidance = "Voltage reading (V)"
-            elif feature == 'rotate':
-                guidance = "Rotation speed (RPM)"
-            elif feature == 'pressure':
-                guidance = "Pressure reading (PSI)"
-            elif feature == 'vibration':
-                guidance = "Vibration level"
-            elif feature == 'age':
-                guidance = "Machine age in days"
-            elif feature == 'error_count':
-                guidance = "Recent error count"
-            elif 'days_since' in feature:
-                component = feature.split('_')[2]
-                guidance = f"Days since {component} maintenance"
+        print(f"🔍 Getting feature info for {len(feature_names)} features")
 
-            features.append({
-                'name': feature,
-                'type': 'numerical',
-                'guidance': guidance
-            })
+        features = []
+        for feature in feature_names:
+            if feature in label_encoders:
+                features.append({
+                    'name': feature,
+                    'type': 'categorical',
+                    'options': list(label_encoders[feature].classes_)
+                })
+            else:
+                # Add guidance for numerical features
+                guidance = ""
+                if feature == 'volt':
+                    guidance = "Voltage reading"
+                elif feature == 'rotate':
+                    guidance = "Rotation speed"
+                elif feature == 'pressure':
+                    guidance = "Pressure reading"
+                elif feature == 'vibration':
+                    guidance = "Vibration level"
+                elif feature == 'age':
+                    guidance = "Machine age in years"
+                elif feature == 'error_count':
+                    guidance = "Recent error count"
+                elif 'days_since' in feature:
+                    component = feature.split('_')[2] if len(feature.split('_')) > 2 else 'component'
+                    guidance = f"Days since {component} maintenance"
 
-    return features
+                features.append({
+                    'name': feature,
+                    'type': 'numerical',
+                    'guidance': guidance
+                })
+
+        print(f"✅ Feature info generated for {len(features)} features")
+        return features
+
+    except Exception as e:
+        print(f"❌ Error getting feature info: {e}")
+        return None
 
 
 def create_example_data():
     """Create example data for quick testing"""
     if not model_package:
+        print("❌ Model package not available for example data")
         return None
 
-    feature_names = model_package['feature_names']
-    label_encoders = model_package['label_encoders']
+    try:
+        feature_names = model_package.get('feature_names', [])
+        label_encoders = model_package.get('label_encoders', {})
 
-    example_data = {}
+        example_data = {}
 
-    # Get valid model if available
-    if 'model' in label_encoders:
-        valid_models = list(label_encoders['model'].classes_)
-        example_data['model'] = valid_models[0] if valid_models else 'model1'
+        # Get valid model if available
+        if 'model' in label_encoders:
+            valid_models = list(label_encoders['model'].classes_)
+            example_data['model'] = valid_models[0] if valid_models else 'model1'
 
-    # Set example values for other features
-    example_values = {
-        'volt': 168.5,
-        'rotate': 415.2,
-        'pressure': 98.7,
-        'vibration': 45.3,
-        'age': 150,
-        'error_count': 2,
-        'days_since_comp1_maint': 15,
-        'days_since_comp2_maint': 8,
-        'days_since_comp3_maint': 22,
-        'days_since_comp4_maint': 12
-    }
+        # Set example values for other features
+        example_values = {
+            'volt': 168.5,
+            'rotate': 415.2,
+            'pressure': 98.7,
+            'vibration': 45.3,
+            'age': 150,
+            'error_count': 2,
+            'days_since_comp1_maint': 15,
+            'days_since_comp2_maint': 8,
+            'days_since_comp3_maint': 22,
+            'days_since_comp4_maint': 12
+        }
 
-    for feature in feature_names:
-        if feature not in example_data:
-            example_data[feature] = example_values.get(feature, 100.0)
+        for feature in feature_names:
+            if feature not in example_data:
+                example_data[feature] = example_values.get(feature, 100.0)
 
-    return example_data
+        print(f"✅ Example data created with {len(example_data)} features")
+        return example_data
+
+    except Exception as e:
+        print(f"❌ Error creating example data: {e}")
+        return None
 
 
 def make_prediction(input_data):
     """Make prediction using the loaded model"""
     try:
+        print(f"🔍 Making prediction with input: {list(input_data.keys())}")
+
         # Extract model components
         model = model_package['model']
-        scaler = model_package['scaler']
-        imputer = model_package['imputer']
-        label_encoders = model_package['label_encoders']
+        scaler = model_package.get('scaler')
+        imputer = model_package.get('imputer')
+        label_encoders = model_package.get('label_encoders', {})
         feature_names = model_package['feature_names']
         target_names = model_package['target_names']
 
@@ -210,7 +229,7 @@ def make_prediction(input_data):
 
         # Process numerical features
         numerical_features = [f for f in feature_names if f not in categorical_features]
-        if numerical_features:
+        if numerical_features and imputer is not None:
             # Handle missing values and convert to float
             for feat in numerical_features:
                 value = X_sample[feat].iloc[0]
@@ -222,7 +241,10 @@ def make_prediction(input_data):
             X_sample[numerical_features] = imputer.transform(X_sample[numerical_features])
 
         # Scale features
-        X_scaled = scaler.transform(X_sample)
+        if scaler is not None:
+            X_scaled = scaler.transform(X_sample)
+        else:
+            X_scaled = X_sample.values
 
         # Make prediction
         raw_prediction = model.predict(X_scaled)[0]
@@ -282,6 +304,7 @@ def make_prediction(input_data):
             recommendation = "Machine in good condition"
             rec_detail = "Follow standard maintenance schedule"
 
+        print(f"✅ Prediction completed successfully")
         return {
             'success': True,
             'results': results,
@@ -298,18 +321,13 @@ def make_prediction(input_data):
         }
 
     except Exception as e:
-        app.logger.error(f'Prediction error: {str(e)}')
-        if app.debug:
-            return {
-                'success': False,
-                'error': str(e),
-                'traceback': traceback.format_exc()
-            }
-        else:
-            return {
-                'success': False,
-                'error': 'Prediction failed. Please check your input data.'
-            }
+        print(f"❌ Error making prediction: {e}")
+        print(f"🔍 Prediction error traceback: {traceback.format_exc()}")
+        return {
+            'success': False,
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        }
 
 
 @app.route('/')
@@ -321,69 +339,77 @@ def index():
 @app.route('/api/model-info')
 def model_info():
     """Get model information"""
+    print("🔍 Model info endpoint called")
+
     if not model_package:
+        print("❌ Model not loaded for model-info endpoint")
         return jsonify({'success': False, 'error': 'Model not loaded'})
 
-    features = get_feature_info()
-    target_names = model_package['target_names']
-    excluded_features = model_package.get('excluded_features', [])
+    try:
+        features = get_feature_info()
+        target_names = model_package.get('target_names', [])
+        excluded_features = model_package.get('excluded_features', [])
 
-    return jsonify({
-        'success': True,
-        'features': features,
-        'targets': target_names,
-        'excluded_features': excluded_features,
-        'total_features': len(features)
-    })
+        print(f"✅ Model info generated: {len(features)} features, {len(target_names)} targets")
+
+        return jsonify({
+            'success': True,
+            'features': features,
+            'targets': target_names,
+            'excluded_features': excluded_features,
+            'total_features': len(features) if features else 0
+        })
+    except Exception as e:
+        print(f"❌ Error in model-info endpoint: {e}")
+        return jsonify({'success': False, 'error': str(e)})
 
 
 @app.route('/api/example-data')
 def example_data():
     """Get example data for testing"""
+    print("🔍 Example data endpoint called")
+
     if not model_package:
+        print("❌ Model not loaded for example-data endpoint")
         return jsonify({'success': False, 'error': 'Model not loaded'})
 
-    example = create_example_data()
-    return jsonify({'success': True, 'data': example})
+    try:
+        example = create_example_data()
+        if example:
+            print(f"✅ Example data generated with {len(example)} features")
+            return jsonify({'success': True, 'data': example})
+        else:
+            return jsonify({'success': False, 'error': 'Failed to generate example data'})
+    except Exception as e:
+        print(f"❌ Error in example-data endpoint: {e}")
+        return jsonify({'success': False, 'error': str(e)})
 
 
 @app.route('/api/predict', methods=['POST'])
 def predict():
     """Make prediction endpoint"""
+    print("🔍 Predict endpoint called")
+
     if not model_package:
+        print("❌ Model not loaded for predict endpoint")
         return jsonify({'success': False, 'error': 'Model not loaded'})
 
     try:
         input_data = request.json
         if not input_data:
+            print("❌ No input data provided")
             return jsonify({'success': False, 'error': 'No input data provided'})
 
-        # Validate input data
-        is_valid, validation_message = validate_input_data(input_data)
-        if not is_valid:
-            return jsonify({'success': False, 'error': validation_message})
-
         result = make_prediction(input_data)
-
-        # Log successful predictions (without sensitive data)
-        if result['success']:
-            app.logger.info('Successful prediction made')
-
         return jsonify(result)
 
     except Exception as e:
-        app.logger.error(f'Prediction endpoint error: {str(e)}')
-        if app.debug:
-            return jsonify({
-                'success': False,
-                'error': str(e),
-                'traceback': traceback.format_exc()
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'error': 'Internal server error'
-            })
+        print(f"❌ Error in predict endpoint: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        })
 
 
 @app.route('/api/performance')
@@ -413,62 +439,73 @@ def performance():
 
 @app.route('/api/status')
 def status():
-    """Get API status"""
+    """Check application status"""
     model_loaded = model_package is not None
-    return jsonify({
+    status_info = {
         'status': 'running',
         'model_loaded': model_loaded,
-        'version': '2.0_enhanced' if model_loaded else None,
-        'timestamp': datetime.now().isoformat()
-    })
+        'version': '2.0_enhanced' if model_loaded else None
+    }
+
+    if model_loaded:
+        status_info['feature_count'] = len(model_package.get('feature_names', []))
+        status_info['target_count'] = len(model_package.get('target_names', []))
+
+    print(f"🔍 Status check: {status_info}")
+    return jsonify(status_info)
 
 
-@app.route('/health')
-def health_check():
-    """Health check endpoint"""
-    return jsonify({
-        'status': 'healthy',
-        'timestamp': datetime.now().isoformat(),
-        'model_loaded': model_package is not None
-    })
+@app.route('/api/debug')
+def debug():
+    """Debug endpoint to check file system and model status"""
+    debug_info = {
+        'model_loaded': model_package is not None,
+        'current_directory': os.getcwd(),
+        'script_directory': os.path.dirname(os.path.abspath(__file__)),
+        'python_version': sys.version,
+        'environment_variables': dict(os.environ)
+    }
+
+    try:
+        # List files in current directory
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        files = os.listdir(script_dir)
+        debug_info['files_in_script_directory'] = files
+        debug_info['pkl_files'] = [f for f in files if f.endswith('.pkl')]
+
+        # Also check current working directory
+        cwd_files = os.listdir(os.getcwd())
+        debug_info['files_in_cwd'] = cwd_files
+        debug_info['pkl_files_in_cwd'] = [f for f in cwd_files if f.endswith('.pkl')]
+
+    except Exception as e:
+        debug_info['directory_error'] = str(e)
+
+    if model_package:
+        debug_info['model_keys'] = list(model_package.keys())
+        debug_info['feature_names'] = model_package.get('feature_names', [])
+        debug_info['target_names'] = model_package.get('target_names', [])
+
+    return jsonify(debug_info)
 
 
-@app.errorhandler(404)
-def not_found(error):
-    return jsonify({'error': 'Endpoint not found'}), 404
+# Load model when the module is imported (for production servers)
+print("🚀 Initializing Enhanced TTTF Prediction Web API")
+print("=" * 50)
 
-
-@app.errorhandler(500)
-def internal_error(error):
-    app.logger.error(f'Server Error: {error}')
-    return jsonify({'error': 'Internal server error'}), 500
-
+# Try to load model immediately
+if load_model():
+    print("✅ Enhanced model loaded successfully during initialization!")
+    if model_package:
+        feature_count = len(model_package.get('feature_names', []))
+        target_count = len(model_package.get('target_names', []))
+        print(f"📊 Features: {feature_count}, Targets: {target_count}")
+else:
+    print("❌ Failed to load model during initialization!")
+    print("   Check the /api/debug endpoint for more information.")
 
 if __name__ == '__main__':
-    print("🚀 Starting Enhanced TTTF Prediction Web API")
-    print("=" * 50)
-
-    # Set up logging
-    setup_logging(app)
-
-    # Load model on startup
-    if load_model():
-        print("✅ Enhanced model loaded successfully!")
-        feature_count = len(model_package['feature_names'])
-        target_count = len(model_package['target_names'])
-        print(f"📊 Features: {feature_count}, Targets: {target_count}")
-    else:
-        print("❌ Failed to load model!")
-        print("   Please ensure model file exists in the models directory.")
-        # Don't exit - let it run for debugging
-        # sys.exit(1)
-
-    # Get port from environment variable
-    port = int(os.environ.get('PORT', 5000))
-    debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
-
-    print(f"🌐 Starting Flask server on port {port}...")
-    print(f"🔧 Debug mode: {debug_mode}")
-
-    # Use production-ready settings
-    app.run(host='0.0.0.0', port=port, debug=debug_mode)
+    print("🌐 Starting Flask development server...")
+    app.run(debug=True, host='0.0.0.0', port=5000)
+else:
+    print("🌐 Running in production mode (WSGI server)")
